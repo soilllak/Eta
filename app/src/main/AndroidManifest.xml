@@ -165,6 +165,10 @@
                 android:value="User-initiated interactive terminals, local Linux services and device automation tasks" />
         </service>
 
+        <receiver
+            android:name=".agent.runtime.AgentNotificationActionReceiver"
+            android:exported="false" />
+
         <service
             android:name=".agent.accessibility.AgentAccessibilityService"
             android:exported="true"

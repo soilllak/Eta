@@ -1087,9 +1087,8 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         val archive = handoff
             ?.takeIf { it.source != AgentRuntimeWire.AGENT_UI_HANDOFF_SOURCE }
             ?.let { item -> AgentExternalArchivePayload.from(item.payload)?.conversationKey?.let { item.source to it } }
-        val guiOverlayActive = overlayHost.isCapsuleVisible ||
-            (owner != null && !owner.session.isTerminal) ||
-            overlayHost.virtualDisplayActive
+        // 顶部视觉位交给系统实时通知（HyperOS 超级岛 / Android 16 Live Update）：
+        // 任务执行期间不再因为 GUI 控制或虚拟屏激活就退回普通前台通知。
         AgentExecutionService.updateRunStatus(
             this,
             if (allActiveRunsSilent) null else status,
@@ -1098,7 +1097,7 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
             archivedSource = archive?.first.orEmpty(),
             archivedKey = archive?.second.orEmpty(),
             startedAtEpochMs = targetRun?.startedAtEpochMs ?: 0L,
-            suppressLiveUpdate = guiOverlayActive || allActiveRunsSilent,
+            suppressLiveUpdate = allActiveRunsSilent,
         )
     }
 
@@ -1251,6 +1250,27 @@ internal class AgentRuntimeService : Service(), LifecycleOwner, SavedStateRegist
         internal fun onEtaUiVisibilityChanged() {
             val instance = activeInstance ?: return
             instance.mainHandler.post { instance.handleEtaUiVisibilityChanged() }
+        }
+
+        /**
+         * 实时通知（超级岛）上的按钮直接投递给运行中的会话：通知动作走广播，
+         * 不额外 startService，避免后台启动限制把暂停/补充吞掉。
+         */
+        internal fun dispatchNotificationAction(action: String, supplement: String? = null) {
+            val instance = activeInstance ?: return
+            instance.mainHandler.post {
+                when (action) {
+                    AgentExecutionService.ACTION_PAUSE_RUN ->
+                        instance.requestPause(instance.displayedRun?.runId)
+                    AgentExecutionService.ACTION_RESUME_RUN -> instance.requestResume()
+                    AgentNotificationActionReceiver.ACTION_SUPPLEMENT -> {
+                        val text = supplement?.trim().orEmpty()
+                        if (text.isNotEmpty()) {
+                            instance.requestSupplement(instance.displayedRun?.runId, text)
+                        }
+                    }
+                }
+            }
         }
 
         private const val ACTION_KEEP_ALIVE = "io.github.mangi.eta.agent.runtime.KEEP_ALIVE"

@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import androidx.core.app.NotificationManagerCompat
 import io.github.mangi.eta.R
 import io.github.mangi.eta.agent.overlay.AgentOverlayStatus
 import io.github.mangi.eta.agent.overlay.localizedText
@@ -130,8 +132,27 @@ internal class AgentExecutionService : Service() {
             .setOnlyAlertOnce(true)
 
         if (status != null) {
+            // 顶部只剩通知：补充输入、暂停/继续、停止都要能直接在通知里完成。
+            val paused = status == AgentOverlayStatus.Paused
+            val toggleLabel = if (paused) R.string.execution_action_resume else R.string.execution_action_pause
+            val toggle = notificationAction(
+                requestCode = 2,
+                action = if (paused) ACTION_RESUME_RUN else ACTION_PAUSE_RUN,
+            )
+            val supplement = notificationAction(
+                requestCode = 3,
+                action = AgentNotificationActionReceiver.ACTION_SUPPLEMENT,
+            )
+            val remoteInput = RemoteInput.Builder(AgentNotificationActionReceiver.KEY_SUPPLEMENT)
+                .setLabel(getString(R.string.overlay_supplement_hint))
+                .build()
             builder
-                .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_open), open).build())
+                .addAction(
+                    Notification.Action.Builder(null, getString(R.string.overlay_supplement), supplement)
+                        .addRemoteInput(remoteInput)
+                        .build(),
+                )
+                .addAction(Notification.Action.Builder(null, getString(toggleLabel), toggle).build())
                 .addAction(Notification.Action.Builder(null, getString(R.string.execution_action_stop), stop).build())
         } else {
             builder
@@ -139,11 +160,14 @@ internal class AgentExecutionService : Service() {
                 .addAction(Notification.Action.Builder(null, getString(R.string.execution_stop), stop).build())
         }
 
-        // 只有 Agent run 在跑、且当前未由 GUI 悬浮窗接管顶部视觉位时才申请提升为 Live Update；
-        // GUI 运行或虚拟屏微缩镜显示期间退回普通前台通知，避免顶部同时出现两个胶囊冲突。
+        // 顶部状态统一由实时通知承载：只要 Agent run 在跑就申请提升为 Live Update，
+        // 只在静默定时任务（用户选择不提醒）时退回普通前台通知。
         if (status != null && !suppressLiveUpdate && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            // 实时通知（超级岛）里标题是当前步骤，正文补充任务规模，避免只剩下一个计时器。
+            val summary = resources.getQuantityString(R.plurals.execution_summary, taskCount, taskCount)
             builder
-                .setStyle(Notification.BigTextStyle().bigText(""))
+                .setContentText(summary)
+                .setStyle(Notification.BigTextStyle().bigText(summary))
                 .setShortCriticalText(status.shortText())
             if (startedAtSnapshot > 0L) {
                 builder
@@ -159,6 +183,18 @@ internal class AgentExecutionService : Service() {
         return builder.build()
     }
 
+    /**
+     * 通知动作统一走广播接收器：RemoteInput 的结果由系统塞进 Intent，
+     * 也避免从通知里 startService 时被后台启动限制拦下。显式组件是 API 34 对可变 PendingIntent 的要求。
+     */
+    private fun notificationAction(requestCode: Int, action: String): PendingIntent =
+        PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            Intent(this, AgentNotificationActionReceiver::class.java).setAction(action),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE,
+        )
+
     /** 状态栏胶囊约 7 个字符可完整显示；更长时只取动作，具体目标留在应用内。 */
     private fun AgentOverlayStatus.shortText(): String = when (this) {
         is AgentOverlayStatus.RunningTool, is AgentOverlayStatus.HostedToolRunning -> getString(R.string.execution_chip_running)
@@ -172,6 +208,13 @@ internal class AgentExecutionService : Service() {
         private const val CHANNEL = "eta_execution"
         private const val NOTIFICATION_ID = 1107
         private const val ACTION_STOP = "io.github.mangi.eta.action.STOP_USER_EXECUTION"
+        /** 通知按钮回到 AgentRuntimeService 处理，避免在通知侧再维护一份运行态。 */
+        internal const val ACTION_PAUSE_RUN = "io.github.mangi.eta.action.PAUSE_AGENT_RUN"
+        internal const val ACTION_RESUME_RUN = "io.github.mangi.eta.action.RESUME_AGENT_RUN"
+
+        /** 通知被系统或用户关闭时，顶部状态需要退回浮窗，否则用户看不到任何进度。 */
+        fun notificationsAvailable(context: Context): Boolean =
+            NotificationManagerCompat.from(context).areNotificationsEnabled()
         private const val BRAND_COLOR = 0xFF4285F4.toInt()
         private val leases = ExecutionLeaseRegistry()
         private val ownerSequence = AtomicLong()
