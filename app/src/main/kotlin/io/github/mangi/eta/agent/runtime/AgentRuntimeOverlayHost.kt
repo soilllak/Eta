@@ -77,6 +77,8 @@ internal class AgentRuntimeOverlayHost(
     private val capsuleSupplementFocusable = mutableStateOf(false)
     /** Agent 手势穿过胶囊时为 true：窗口不可触摸，胶囊淡出让路。 */
     private val capsuleYielded = mutableStateOf(false)
+    /** 顶部状态胶囊悬浮窗开关：关闭时只保留全屏氛围光，不创建任何顶部浮窗。 */
+    private val showStatusCapsule = false
     private val restoreCapsule = Runnable { setCapsuleYielded(false) }
 
     private val clearanceHost = object : AgentOverlayClearance.Host {
@@ -143,10 +145,11 @@ internal class AgentRuntimeOverlayHost(
 
     fun setKeepScreenOn(enabled: Boolean) {
         capsuleView?.keepScreenOn = enabled
+        glowView?.keepScreenOn = enabled
     }
 
     fun showAmbient() {
-        if (capsuleView != null) return
+        if (glowView != null) return
         // TYPE_ACCESSIBILITY_OVERLAY 免 SYSTEM_ALERT_WINDOW 权限；仅回退态（无障碍未启用）才需检查
         if (AgentAccessibilityService.current() == null && !Settings.canDrawOverlays(serviceContext)) return
         val wm = overlayContext().getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
@@ -161,6 +164,7 @@ internal class AgentRuntimeOverlayHost(
             )
         }
         val glowLp = glowLayoutParams()
+        glow.keepScreenOn = isKeepScreenOn()
         runCatching { wm.addView(glow, glowLp) }.onFailure { throwable ->
             AndroidAgentLogger.warnThrottled("runtime_glow_add_view_failed") {
                 "Agent runtime glow addView failed: type=${throwable.safeLogType()}"
@@ -168,6 +172,10 @@ internal class AgentRuntimeOverlayHost(
         }
         glowView = glow
         glowParams = glowLp
+
+        // 顶部状态胶囊悬浮窗默认不创建：只保留全屏彩色氛围光，避免浮窗压住目标应用的顶部工具栏。
+        // 需要恢复时把 showStatusCapsule 改回 true 即可。
+        if (!showStatusCapsule) return
 
         // ── 状态胶囊窗口：状态栏下方居中，收起时一句状态（含微缩镜），点击展开控制与画廊视窗 ─
         val capsule = createOverlayComposeView {
