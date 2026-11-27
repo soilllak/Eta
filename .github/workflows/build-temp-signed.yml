@@ -1,0 +1,53 @@
+name: Build APK (temp sign)
+
+# 不需要仓库 Secrets：临时生成一把签名密钥，产出可直接安装的 release APK。
+# 签名与官方发布包不同，安装时需先卸载旧版本。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temp-signed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 编译 release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置构建环境
+        uses: ./.github/actions/setup-build
+
+      - name: 生成临时签名密钥
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/eta-ci.jks" -storetype PKCS12 \
+            -storepass etaci123 -keypass etaci123 -alias eta \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Eta CI Build, O=Eta, C=CN"
+
+      - name: 编译 release
+        env:
+          ETA_RELEASE_STORE_FILE: ${{ runner.temp }}/eta-ci.jks
+          ETA_RELEASE_STORE_PASSWORD: etaci123
+          ETA_RELEASE_KEY_ALIAS: eta
+          ETA_RELEASE_KEY_PASSWORD: etaci123
+        run: |
+          ./gradlew --no-daemon --no-configuration-cache \
+            -Peta.buildMetadata=${GITHUB_SHA::7} :app:assembleRelease
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: eta-release-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
